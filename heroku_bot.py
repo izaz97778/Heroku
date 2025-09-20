@@ -8,8 +8,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-# The escape_markdown helper is no longer needed with this new method
-# from telegram.helpers import escape_markdown
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -118,7 +116,6 @@ async def list_apps(query, action_type: str):
 
         keyboard = []
         for app in apps:
-            # Use a more robust callback data format
             callback_data = f"select_app_{action_type}_{app.name}"
             keyboard.append([InlineKeyboardButton(app.name, callback_data=callback_data)])
         
@@ -138,7 +135,6 @@ async def confirm_restart(query, app_name: str):
         [InlineKeyboardButton("✅ Yes, Restart", callback_data=f"confirm_restart_{app_name}")],
         [InlineKeyboardButton("❌ No, Cancel", callback_data="list_apps_restart")]
     ]
-    # FIX: Use backticks (`) for variable names to prevent all Markdown errors
     await query.message.edit_text(f"Are you sure you want to restart all dynos for `{app_name}`?",
                                   reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="MarkdownV2")
 
