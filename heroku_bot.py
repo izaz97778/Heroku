@@ -45,7 +45,6 @@ async def show_app_management_menu(query):
     """Shows the app management options."""
     keyboard = [
         [InlineKeyboardButton("🔄 Restart Dynos", callback_data="list_apps_restart")],
-        # MODIFIED: Changed "Scale Dynos" to "Manage Dynos"
         [InlineKeyboardButton("⚙️ Manage Dynos", callback_data="list_apps_manage")],
         [InlineKeyboardButton("« Back to Main Menu", callback_data="main_menu")],
     ]
@@ -77,7 +76,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_main_menu(update, context)
     elif data == "list_apps_restart":
         await list_apps(query, "restart")
-    # MODIFIED: Added routing for the new Manage Dynos flow
     elif data == "list_apps_manage":
         await list_apps(query, "manage")
     elif data.startswith("select_app_restart_"):
@@ -86,11 +84,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif data.startswith("confirm_restart_"):
         app_name = data.replace("confirm_restart_", "")
         await restart_dyno(query, app_name)
-    # MODIFIED: Renamed "scale" to "manage" for clarity
     elif data.startswith("select_app_manage_"):
         app_name = data.replace("select_app_manage_", "")
         await show_dyno_management_options(query, app_name)
-    # NEW: Routing for resizing the dyno type
     elif data.startswith("resize_dyno_"):
         _, app_name, dyno_type, size = data.split("_", 3)
         await resize_dyno(query, app_name, dyno_type, size)
@@ -153,14 +149,13 @@ async def restart_dyno(query, app_name: str):
         await query.message.edit_text(f"❌ Failed to restart dynos. Error: {e}",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_restart")]]))
 
-# NEW: Function to show the combined dyno management menu
 async def show_dyno_management_options(query, app_name: str):
     """Shows current dyno status and options to change size or quantity."""
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
         app = heroku_conn.apps()[app_name]
-        # Get formation for the 'web' dyno, as it's the most common
-        web_formation = app.formation().get('web')
+        # FIX: Use app.process_formation() instead of app.formation()
+        web_formation = app.process_formation().get('web')
 
         if not web_formation:
             await query.message.edit_text(f"No 'web' dyno formation found for **{app_name}**.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="manage_apps")]]))
@@ -178,11 +173,9 @@ async def show_dyno_management_options(query, app_name: str):
         keyboard = [
             [InlineKeyboardButton("Change Size (Type)", callback_data="noop")],
             [
+                InlineKeyboardButton("Eco", callback_data=f"resize_dyno_{app_name}_web_eco"),
                 InlineKeyboardButton("Standard-1X", callback_data=f"resize_dyno_{app_name}_web_standard-1x"),
                 InlineKeyboardButton("Standard-2X", callback_data=f"resize_dyno_{app_name}_web_standard-2x"),
-            ],
-            [
-                InlineKeyboardButton("Eco", callback_data=f"resize_dyno_{app_name}_web_eco"),
             ],
             [InlineKeyboardButton("Change Quantity", callback_data="noop")],
             [
@@ -197,14 +190,15 @@ async def show_dyno_management_options(query, app_name: str):
         logger.error(f"Failed to get dyno info for {app_name}: {e}")
         await query.message.edit_text(f"❌ Failed to get dyno info. Error: {e}")
 
-# NEW: Function to change the dyno size (vertical scaling)
 async def resize_dyno(query, app_name: str, dyno_type: str, size: str):
     """Changes the dyno size (e.g., to standard-1x)."""
     await query.message.edit_text(f"Resizing **{dyno_type}** dyno for **{app_name}** to **{size}**...", parse_mode="Markdown")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
         app = heroku_conn.apps()[app_name]
-        app.update_formation(dyno_type, size=size)
+        # FIX: Use the formation.update() method for resizing
+        formation = app.process_formation()[dyno_type]
+        formation.update(size=size)
         await query.message.edit_text(f"✅ Successfully resized **{dyno_type}** dyno to **{size}**.",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« Back to {app_name}", callback_data=f"select_app_manage_{app_name}")]]),
                                       parse_mode="Markdown")
@@ -220,7 +214,9 @@ async def scale_dyno(query, app_name: str, dyno_type: str, quantity: int):
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
         app = heroku_conn.apps()[app_name]
-        app.scale_dyno(dyno_type, quantity)
+        # FIX: Use the formation.update() method for scaling
+        formation = app.process_formation()[dyno_type]
+        formation.update(quantity=quantity)
         await query.message.edit_text(f"✅ Successfully scaled **{dyno_type}** dyno for **{app_name}** to **{quantity}**.",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« Back to {app_name}", callback_data=f"select_app_manage_{app_name}")]]),
                                       parse_mode="Markdown")
