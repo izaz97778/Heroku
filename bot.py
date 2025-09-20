@@ -63,8 +63,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     
     if query.from_user.id != OWNER_ID:
+    try:
         await query.answer("You are not authorized to use this bot.", show_alert=True)
-        return
+    except Exception as e:
+        logger.warning(f"❌ Failed to answer callback for unauthorized user: {e}")
+    return
+
 
     await query.answer()
     data = query.data
