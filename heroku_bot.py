@@ -43,7 +43,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
 
 async def show_app_management_menu(query):
     """Shows the app management options."""
-    # REMOVED: "Manage Dynos" button
     keyboard = [
         [InlineKeyboardButton("🔄 Restart Dynos", callback_data="list_apps_restart")],
         [InlineKeyboardButton("« Back to Main Menu", callback_data="main_menu")],
@@ -82,7 +81,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif data.startswith("confirm_restart_"):
         app_name = data.replace("confirm_restart_", "")
         await restart_dyno(query, app_name)
-    # REMOVED: All routing for list_apps_manage, select_app_manage, resize_dyno, and scale_dyno
 
 
 async def list_apps(query, action_type: str):
@@ -121,17 +119,19 @@ async def confirm_restart(query, app_name: str):
         [InlineKeyboardButton("✅ Yes, Restart", callback_data=f"confirm_restart_{app_name}")],
         [InlineKeyboardButton("❌ No, Cancel", callback_data="list_apps_restart")]
     ]
-    # NOTE: Using MarkdownV2 for safer text formatting with backticks
+    # FIX: Wrap app_name in backticks to prevent Markdown errors
     await query.message.edit_text(f"Are you sure you want to restart all dynos for `{app_name}`?",
                                   reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="MarkdownV2")
 
 async def restart_dyno(query, app_name: str):
     """Restarts all dynos for a specific app."""
+    # FIX: Wrap app_name in backticks
     await query.message.edit_text(f"🔄 Restarting dynos for `{app_name}`...", parse_mode="MarkdownV2")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
         app = heroku_conn.apps()[app_name]
         app.restart()
+        # FIX: Wrap app_name in backticks
         await query.message.edit_text(f"✅ Successfully restarted all dynos for `{app_name}`.",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_restart")]]),
                                       parse_mode="MarkdownV2")
@@ -139,8 +139,6 @@ async def restart_dyno(query, app_name: str):
         logger.error(f"Failed to restart dyno for {app_name}: {e}")
         await query.message.edit_text(f"❌ Failed to restart dynos. Error: {e}",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_restart")]]))
-
-# REMOVED: The show_dyno_management_options, resize_dyno, and scale_dyno functions have been deleted.
 
 # --- Main Application Setup ---
 def main() -> None:
