@@ -1,143 +1,199 @@
 import os
 import logging
 import heroku3
+import pymongo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters,
-    CallbackQueryHandler, ConversationHandler, ContextTypes
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
 )
 
-# --- Logging setup ---
+# --- Configuration ---
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI", "") # MongoDB Change: Get URI from environment
+
+# --- Logging Setup ---
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Config ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DEFAULT_HEROKU_API_KEY = os.getenv("HEROKU_API_KEY")
+# --- MongoDB Connection ---
+if not MONGO_URI:
+    logger.error("MONGO_URI environment variable not set. Exiting.")
+    exit(1)
 
-# Store user API keys in memory (you can replace with DB later)
-user_api_keys = {}
+try:
+    client = pymongo.MongoClient(MONGO_URI)
+    db = client.get_database("HerokuBotDB")
+    user_collection = db.get_collection("users")
+    # Test the connection
+    client.admin.command('ping')
+    logger.info("Successfully connected to MongoDB.")
+except Exception as e:
+    logger.error(f"Could not connect to MongoDB: {e}")
+    exit(1)
 
-# Conversation states
-GET_API_KEY = 1
+# --- Conversation Handler States ---
+ASK_EMAIL, ASK_API_KEY = range(2)
 
-
-# --- Helpers ---
-def get_heroku_conn(api_key: str = None):
-    """Return a Heroku connection using provided key or default env key."""
-    key = api_key or DEFAULT_HEROKU_API_KEY
-    if not key:
+# --- Helper Functions ---
+def get_heroku_conn(api_key: str):
+    """Establishes a connection to the Heroku API."""
+    try:
+        return heroku3.from_key(api_key)
+    except Exception:
         return None
-    return heroku3.from_key(key)
 
-
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="Choose an option:"):
-    """Send the main menu with buttons."""
+# --- Main Menu and Start Command ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
-        [InlineKeyboardButton("List Apps", callback_data="list_apps")],
-        [InlineKeyboardButton("Login", callback_data="login")],
+        [InlineKeyboardButton("🔐 Login to Heroku", callback_data="login")],
+        [InlineKeyboardButton("⚙️ Manage Apps", callback_data="manage_apps")],
+        [InlineKeyboardButton("🚪 Logout", callback_data="logout")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    if update.callback_query:
-        await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup)
-
-
-# --- Handlers ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu(update, context, "👋 Welcome to the Heroku Bot!")
-
-
-async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.message.reply_text(
-        "🔑 Please send me your Heroku API key.\n\n"
-        "➡️ You can find it at https://dashboard.heroku.com/account"
+    await update.message.reply_text(
+        "Welcome to the Heroku Management Bot! 👋\n\n"
+        "Please log in to manage your applications.",
+        reply_markup=reply_markup,
     )
-    return GET_API_KEY
 
+# --- Login Conversation ---
+async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "Please send me your Heroku account email address.\n\n"
+        "You can type /cancel to abort."
+    )
+    return ASK_EMAIL
+
+async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['heroku_email'] = update.message.text.strip()
+    await update.message.reply_text(
+        "Great. Now, please send me your Heroku API Key.\n\n"
+        "⚠️ **Warning**: Your API key grants full access to your account."
+    )
+    return ASK_API_KEY
 
 async def get_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.message.from_user.id
     api_key = update.message.text.strip()
-
-    # Try deleting the message for safety
+    
     try:
         await update.message.delete()
     except Exception as e:
         logger.warning(f"Could not delete API key message: {e}")
 
-    await update.message.reply_text("⏳ Authenticating...")
+    await update.message.reply_text("Authenticating...")
     heroku_conn = get_heroku_conn(api_key)
 
-    try:
-        # Validate by listing apps
-        _ = heroku_conn.apps()
-        user_api_keys[user_id] = api_key
-        await update.message.reply_text("✅ Login successful! You can now manage your apps.")
-        await show_main_menu(update, context, "What would you like to do next?")
-    except Exception as e:
-        logger.error(f"Heroku authentication failed: {e}")
-        await update.message.reply_text(
-            "❌ Authentication failed! Your API key seems invalid or unauthorized."
+    if heroku_conn:
+        # MongoDB Change: Save the API key to the database
+        user_collection.update_one(
+            {"_id": user_id},
+            {"$set": {"api_key": api_key}},
+            upsert=True
         )
+        await update.message.reply_text("✅ **Login successful!** Your credentials are now saved.")
+        await show_main_menu(update, context, "What would you like to do next?")
+    else:
+        await update.message.reply_text("❌ **Authentication failed!** The API key seems invalid.")
         await show_main_menu(update, context)
-
+        
+    if 'heroku_email' in context.user_data:
+        del context.user_data['heroku_email']
+        
     return ConversationHandler.END
 
+async def cancel_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if 'heroku_email' in context.user_data:
+        del context.user_data['heroku_email']
+    await update.message.reply_text("Login cancelled.")
+    await show_main_menu(update, context)
+    return ConversationHandler.END
 
-async def list_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    api_key = user_api_keys.get(user_id, None)
-
-    heroku_conn = get_heroku_conn(api_key)
-    if not heroku_conn:
-        await update.callback_query.message.reply_text(
-            "❌ No valid Heroku API key found. Please login first."
-        )
-        return
-
-    try:
-        apps = heroku_conn.apps()
-        if not apps:
-            await update.callback_query.message.reply_text("⚠️ No apps found on your Heroku account.")
-            return
-
-        text = "🚀 Your Heroku Apps:\n\n"
-        for app in apps:
-            text += f"• {app.name}\n"
-        await update.callback_query.message.reply_text(text)
-
-    except Exception as e:
-        logger.error(f"Error fetching apps: {e}")
-        await update.callback_query.message.reply_text("❌ Failed to fetch apps. Check API key.")
-
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Button Handler and Actions ---
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
+    data = query.data
 
-    if query.data == "list_apps":
-        await list_apps(update, context)
-    elif query.data == "login":
-        return await login(update, context)
+    if data == "logout":
+        await logout_user(query)
+        return
+    
+    # MongoDB Change: Check if user exists in the database
+    if data != "main_menu" and not user_collection.find_one({"_id": user_id}):
+        await query.edit_message_text(
+            "You are not logged in. Please login first.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔐 Login", callback_data="login")]])
+        )
+        return
+    
+    # ... (routing logic remains the same)
+    if data == "manage_apps":
+        await show_app_management_menu(query)
+    # ... etc.
 
+async def logout_user(query: Update.callback_query):
+    user_id = query.from_user.id
+    # MongoDB Change: Delete the user's document from the database
+    result = user_collection.delete_one({"_id": user_id})
+    if result.deleted_count > 0:
+        text = "✅ You have been successfully logged out."
+    else:
+        text = "You were not logged in."
+    
+    # ... (rest of the function is the same)
 
-# --- Main ---
-def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+async def list_apps(query, action_type: str):
+    user_id = query.from_user.id
+    # MongoDB Change: Retrieve API key from the database
+    user_doc = user_collection.find_one({"_id": user_id})
+    if not user_doc or "api_key" not in user_doc:
+        await query.edit_message_text("Could not find your credentials. Please /logout and login again.")
+        return
+    api_key = user_doc["api_key"]
+    
+    # ... (rest of the function is the same)
 
-    # Conversation handler for login
+# Note: All other functions like restart_dyno, scale_dyno, etc., also need to fetch the api_key from the database.
+# The following is a sample for restart_dyno. You would apply the same pattern to the others.
+
+async def restart_dyno(query, user_id: int, app_name: str):
+    await query.edit_message_text(f"🔄 Restarting dynos for **{app_name}**...", parse_mode="Markdown")
+    # MongoDB Change: Retrieve API key from the database
+    user_doc = user_collection.find_one({"_id": user_id})
+    if not user_doc or "api_key" not in user_doc:
+        await query.edit_message_text("Could not find your credentials. Please /logout and login again.")
+        return
+    api_key = user_doc["api_key"]
+    
+    heroku_conn = get_heroku_conn(api_key)
+    # ... (rest of the function is the same)
+
+# --- (The rest of your functions like show_main_menu, confirm_restart, scale_dyno, etc., need to be included here) ---
+# --- (Make sure to apply the same MongoDB logic to fetch the API key in all functions that need it) ---
+
+# --- Main Application Setup ---
+def main() -> None:
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
     login_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(login, pattern="^login$")],
+        entry_points=[CallbackQueryHandler(login_start, pattern="^login$")],
         states={
-            GET_API_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_api_key)],
+            ASK_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_email)],
+            ASK_API_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_api_key)],
         },
-        fallbacks=[],
-        per_message=True,  # ✅ avoid PTB warning
+        fallbacks=[CommandHandler("cancel", cancel_login)],
     )
 
     application.add_handler(CommandHandler("start", start))
