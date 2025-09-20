@@ -8,8 +8,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-# FIX: Import the markdown escape helper
-from telegram.helpers import escape_markdown
+# The escape_markdown helper is no longer needed with this new method
+# from telegram.helpers import escape_markdown
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -89,8 +89,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     elif data.startswith("select_app_manage_"):
         app_name = data.replace("select_app_manage_", "")
         await show_dyno_management_options(query, app_name)
-    # FIX: Correctly parse callback_data for resize and scale
     elif data.startswith("resize_dyno_"):
+        # Robust parsing for app names that might contain underscores
         app_name = '_'.join(parts[2:-2])
         dyno_type = parts[-2]
         size = parts[-1]
@@ -100,7 +100,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         dyno_type = parts[-2]
         quantity = parts[-1]
         await scale_dyno(query, app_name, dyno_type, int(quantity))
-
 
 async def list_apps(query, action_type: str):
     """Fetches and lists user's apps as buttons."""
@@ -119,6 +118,7 @@ async def list_apps(query, action_type: str):
 
         keyboard = []
         for app in apps:
+            # Use a more robust callback data format
             callback_data = f"select_app_{action_type}_{app.name}"
             keyboard.append([InlineKeyboardButton(app.name, callback_data=callback_data)])
         
@@ -138,21 +138,18 @@ async def confirm_restart(query, app_name: str):
         [InlineKeyboardButton("✅ Yes, Restart", callback_data=f"confirm_restart_{app_name}")],
         [InlineKeyboardButton("❌ No, Cancel", callback_data="list_apps_restart")]
     ]
-    # FIX: Escape app_name for Markdown
-    safe_app_name = escape_markdown(app_name, version=2)
-    await query.message.edit_text(f"Are you sure you want to restart all dynos for *{safe_app_name}*?",
+    # FIX: Use backticks (`) for variable names to prevent all Markdown errors
+    await query.message.edit_text(f"Are you sure you want to restart all dynos for `{app_name}`?",
                                   reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="MarkdownV2")
 
 async def restart_dyno(query, app_name: str):
     """Restarts all dynos for a specific app."""
-    # FIX: Escape app_name for Markdown
-    safe_app_name = escape_markdown(app_name, version=2)
-    await query.message.edit_text(f"🔄 Restarting dynos for *{safe_app_name}*...", parse_mode="MarkdownV2")
+    await query.message.edit_text(f"🔄 Restarting dynos for `{app_name}`...", parse_mode="MarkdownV2")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
         app = heroku_conn.apps()[app_name]
         app.restart()
-        await query.message.edit_text(f"✅ Successfully restarted all dynos for *{safe_app_name}*.",
+        await query.message.edit_text(f"✅ Successfully restarted all dynos for `{app_name}`.",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_restart")]]),
                                       parse_mode="MarkdownV2")
     except Exception as e:
@@ -166,23 +163,20 @@ async def show_dyno_management_options(query, app_name: str):
     try:
         app = heroku_conn.apps()[app_name]
         web_formation = app.process_formation().get('web')
-        # FIX: Escape app_name for Markdown
-        safe_app_name = escape_markdown(app_name, version=2)
 
         if not web_formation:
-            await query.message.edit_text(f"No 'web' dyno formation found for *{safe_app_name}*.", parse_mode="MarkdownV2", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="manage_apps")]]))
+            await query.message.edit_text(f"No 'web' dyno formation found for `{app_name}`.", parse_mode="MarkdownV2", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="manage_apps")]]))
             return
             
         current_size = web_formation.size
         current_quantity = web_formation.quantity
 
-        text = (f"App: *{safe_app_name}*\n"
-                f"Current Formation: *web* dyno\n"
-                f" ┣ Size: *{escape_markdown(str(current_size), version=2)}*\n"
-                f" ┗ Quantity: *{current_quantity}*\n\n"
+        text = (f"App: `{app_name}`\n"
+                f"Current Formation: `web` dyno\n"
+                f" ┣ Size: `{current_size}`\n"
+                f" ┗ Quantity: `{current_quantity}`\n\n"
                 f"Select an action:")
 
-        # FIX: Create callback_data that can handle app names with underscores
         keyboard = [
             [InlineKeyboardButton("Change Size (Type)", callback_data="noop")],
             [
@@ -205,17 +199,13 @@ async def show_dyno_management_options(query, app_name: str):
 
 async def resize_dyno(query, app_name: str, dyno_type: str, size: str):
     """Changes the dyno size (e.g., to standard-1x)."""
-    # FIX: Escape variables for Markdown
-    safe_app_name = escape_markdown(app_name, version=2)
-    safe_dyno_type = escape_markdown(dyno_type, version=2)
-    safe_size = escape_markdown(size, version=2)
-    await query.message.edit_text(f"Resizing *{safe_dyno_type}* dyno for *{safe_app_name}* to *{safe_size}*...", parse_mode="MarkdownV2")
+    await query.message.edit_text(f"Resizing `{dyno_type}` dyno for `{app_name}` to `{size}`...", parse_mode="MarkdownV2")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
         app = heroku_conn.apps()[app_name]
         formation = app.process_formation()[dyno_type]
         formation.update(size=size)
-        await query.message.edit_text(f"✅ Successfully resized *{safe_dyno_type}* dyno to *{safe_size}*.",
+        await query.message.edit_text(f"✅ Successfully resized `{dyno_type}` dyno to `{size}`.",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« Back to {app_name}", callback_data=f"select_app_manage_{app_name}")]]),
                                       parse_mode="MarkdownV2")
     except Exception as e:
@@ -226,16 +216,13 @@ async def resize_dyno(query, app_name: str, dyno_type: str, size: str):
 
 async def scale_dyno(query, app_name: str, dyno_type: str, quantity: int):
     """Changes the dyno quantity for an app (horizontal scaling)."""
-    # FIX: Escape variables for Markdown
-    safe_app_name = escape_markdown(app_name, version=2)
-    safe_dyno_type = escape_markdown(dyno_type, version=2)
-    await query.message.edit_text(f"📊 Scaling *{safe_dyno_type}* dyno for *{safe_app_name}* to *{quantity}*...", parse_mode="MarkdownV2")
+    await query.message.edit_text(f"📊 Scaling `{dyno_type}` dyno for `{app_name}` to `{quantity}`...", parse_mode="MarkdownV2")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
         app = heroku_conn.apps()[app_name]
         formation = app.process_formation()[dyno_type]
         formation.update(quantity=quantity)
-        await query.message.edit_text(f"✅ Successfully scaled *{safe_dyno_type}* dyno for *{safe_app_name}* to *{quantity}*.",
+        await query.message.edit_text(f"✅ Successfully scaled `{dyno_type}` dyno for `{app_name}` to `{quantity}`.",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« Back to {app_name}", callback_data=f"select_app_manage_{app_name}")]]),
                                       parse_mode="MarkdownV2")
     except Exception as e:
