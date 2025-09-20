@@ -3,293 +3,141 @@ import logging
 import heroku3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
+    Application, CommandHandler, MessageHandler, filters,
+    CallbackQueryHandler, ConversationHandler, ContextTypes
 )
 
-# --- Configuration ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-
-# --- Logging Setup ---
+# --- Logging setup ---
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- In-memory storage for user Heroku API keys ---
+# --- Config ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DEFAULT_HEROKU_API_KEY = os.getenv("HEROKU_API_KEY")
+
+# Store user API keys in memory (you can replace with DB later)
 user_api_keys = {}
 
-# --- Conversation Handler States ---
-ASK_EMAIL, ASK_API_KEY = range(2)
+# Conversation states
+GET_API_KEY = 1
 
-# --- Helper Functions ---
-def get_heroku_conn(api_key: str):
-    """Establishes a connection to the Heroku API."""
-    try:
-        return heroku3.from_key(api_key)
-    except Exception:
+
+# --- Helpers ---
+def get_heroku_conn(api_key: str = None):
+    """Return a Heroku connection using provided key or default env key."""
+    key = api_key or DEFAULT_HEROKU_API_KEY
+    if not key:
         return None
+    return heroku3.from_key(key)
 
-# --- Main Menu and Start Command ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends the main menu when the /start command is issued."""
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="Choose an option:"):
+    """Send the main menu with buttons."""
     keyboard = [
-        [InlineKeyboardButton("🔐 Login to Heroku", callback_data="login")],
-        [InlineKeyboardButton("⚙️ Manage Apps", callback_data="manage_apps")],
-        [InlineKeyboardButton("🚪 Logout", callback_data="logout")],
+        [InlineKeyboardButton("List Apps", callback_data="list_apps")],
+        [InlineKeyboardButton("Login", callback_data="login")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "Welcome to the Heroku Management Bot! 👋\n\n"
-        "Please log in to manage your applications.",
-        reply_markup=reply_markup,
-    )
+    if update.callback_query:
+        await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup)
 
-# --- Login Conversation ---
-async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Starts the login conversation by asking for the email."""
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "Please send me your Heroku account email address.\n\n"
-        "You can type /cancel to abort."
-    )
-    return ASK_EMAIL
 
-async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Stores the email and asks for the API Key."""
-    context.user_data['heroku_email'] = update.message.text.strip()
-    await update.message.reply_text(
-        "Great. Now, please send me your Heroku API Key.\n\n"
-        "⚠️ **Warning**: Your API key grants full access to your account. "
-        "For security, I recommend deleting the message containing your key after sending it."
+# --- Handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_main_menu(update, context, "👋 Welcome to the Heroku Bot!")
+
+
+async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.message.reply_text(
+        "🔑 Please send me your Heroku API key.\n\n"
+        "➡️ You can find it at https://dashboard.heroku.com/account"
     )
-    return ASK_API_KEY
+    return GET_API_KEY
+
 
 async def get_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receives and validates the Heroku API Key."""
     user_id = update.message.from_user.id
     api_key = update.message.text.strip()
-    
-    # It's good practice to delete the message containing the key
+
+    # Try deleting the message for safety
     try:
         await update.message.delete()
     except Exception as e:
         logger.warning(f"Could not delete API key message: {e}")
 
-    await update.message.reply_text("Authenticating...")
+    await update.message.reply_text("⏳ Authenticating...")
     heroku_conn = get_heroku_conn(api_key)
 
-    if heroku_conn:
+    try:
+        # Validate by listing apps
+        _ = heroku_conn.apps()
         user_api_keys[user_id] = api_key
-        await update.message.reply_text("✅ **Login successful!** You can now manage your apps.")
+        await update.message.reply_text("✅ Login successful! You can now manage your apps.")
         await show_main_menu(update, context, "What would you like to do next?")
-    else:
+    except Exception as e:
+        logger.error(f"Heroku authentication failed: {e}")
         await update.message.reply_text(
-            "❌ **Authentication failed!** The API key seems invalid. "
-            "Please try logging in again with a valid key."
+            "❌ Authentication failed! Your API key seems invalid or unauthorized."
         )
         await show_main_menu(update, context)
-        
-    # Clean up the conversation data
-    if 'heroku_email' in context.user_data:
-        del context.user_data['heroku_email']
-        
+
     return ConversationHandler.END
 
-async def cancel_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancels the login conversation."""
-    if 'heroku_email' in context.user_data:
-        del context.user_data['heroku_email']
-    await update.message.reply_text("Login cancelled.")
-    await show_main_menu(update, context)
-    return ConversationHandler.END
 
-# (The rest of the file remains the same as before)
-# ... button_handler, show_main_menu, logout_user, list_apps, etc. ...
+async def list_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    api_key = user_api_keys.get(user_id, None)
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    data = query.data
-
-    if data == "logout":
-        await logout_user(query)
-        return
-
-    if data not in ["main_menu"] and user_id not in user_api_keys:
-        await query.edit_message_text(
-            "You are not logged in. Please login first.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔐 Login", callback_data="login")]])
+    heroku_conn = get_heroku_conn(api_key)
+    if not heroku_conn:
+        await update.callback_query.message.reply_text(
+            "❌ No valid Heroku API key found. Please login first."
         )
         return
 
-    if data == "manage_apps":
-        await show_app_management_menu(query)
-    elif data == "main_menu":
-        await show_main_menu(update, context, message_id=query.message.message_id)
-    elif data == "list_apps_restart":
-        await list_apps(query, "restart")
-    elif data.startswith("select_app_restart_"):
-        app_name = data.replace("select_app_restart_", "")
-        await confirm_restart(query, app_name)
-    elif data.startswith("confirm_restart_"):
-        app_name = data.replace("confirm_restart_", "")
-        await restart_dyno(query, user_id, app_name)
-    elif data == "list_apps_scale":
-        await list_apps(query, "scale")
-    elif data.startswith("select_app_scale_"):
-        app_name = data.replace("select_app_scale_", "")
-        await show_scale_options(query, user_id, app_name)
-    elif data.startswith("scale_dyno_"):
-        _, app_name, dyno_type, quantity = data.split("_", 3)
-        await scale_dyno(query, user_id, app_name, dyno_type, int(quantity))
-
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = "Main Menu", message_id: int = None):
-    keyboard = [
-        [InlineKeyboardButton("🔐 Login to Heroku", callback_data="login")],
-        [InlineKeyboardButton("⚙️ Manage Apps", callback_data="manage_apps")],
-        [InlineKeyboardButton("🚪 Logout", callback_data="logout")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    if message_id:
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=message_id, text=text, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup)
-
-async def logout_user(query: Update.callback_query):
-    user_id = query.from_user.id
-    if user_id in user_api_keys:
-        del user_api_keys[user_id]
-        text = "✅ You have been successfully logged out."
-    else:
-        text = "You were not logged in."
-    
-    keyboard = [
-        [InlineKeyboardButton("🔐 Login to Heroku", callback_data="login")],
-        [InlineKeyboardButton("⚙️ Manage Apps", callback_data="manage_apps")],
-    ]
-    await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def show_app_management_menu(query):
-    keyboard = [
-        [InlineKeyboardButton("🔄 Restart Dynos", callback_data="list_apps_restart")],
-        [InlineKeyboardButton("📊 Change Dyno Quantity", callback_data="list_apps_scale")],
-        [InlineKeyboardButton("« Back to Main Menu", callback_data="main_menu")],
-    ]
-    await query.edit_message_text("App Management:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def list_apps(query, action_type: str):
-    user_id = query.from_user.id
-    api_key = user_api_keys.get(user_id)
-    heroku_conn = get_heroku_conn(api_key)
-
-    if not heroku_conn:
-        await query.edit_message_text("Error connecting to Heroku. Please login again.")
-        return
-
-    await query.edit_message_text("⏳ Fetching your apps...")
     try:
         apps = heroku_conn.apps()
         if not apps:
-            await query.edit_message_text("You don't have any Heroku apps.",
-                                          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="manage_apps")]]))
+            await update.callback_query.message.reply_text("⚠️ No apps found on your Heroku account.")
             return
 
-        keyboard = []
+        text = "🚀 Your Heroku Apps:\n\n"
         for app in apps:
-            callback_data = f"select_app_{action_type}_{app.name}"
-            keyboard.append([InlineKeyboardButton(app.name, callback_data=callback_data)])
-        
-        keyboard.append([InlineKeyboardButton("« Back", callback_data="manage_apps")])
-        
-        prompt = "Select an app to restart its dynos:" if action_type == "restart" else "Select an app to scale its dynos:"
-        await query.edit_message_text(prompt, reply_markup=InlineKeyboardMarkup(keyboard))
+            text += f"• {app.name}\n"
+        await update.callback_query.message.reply_text(text)
 
     except Exception as e:
-        logger.error(f"Failed to fetch apps: {e}")
-        await query.edit_message_text(f"An error occurred while fetching your apps. Details: {e}")
+        logger.error(f"Error fetching apps: {e}")
+        await update.callback_query.message.reply_text("❌ Failed to fetch apps. Check API key.")
 
-async def confirm_restart(query, app_name: str):
-    keyboard = [
-        [InlineKeyboardButton("✅ Yes, Restart", callback_data=f"confirm_restart_{app_name}")],
-        [InlineKeyboardButton("❌ No, Cancel", callback_data="list_apps_restart")]
-    ]
-    await query.edit_message_text(f"Are you sure you want to restart all dynos for **{app_name}**?",
-                                  reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-async def restart_dyno(query, user_id: int, app_name: str):
-    await query.edit_message_text(f"🔄 Restarting dynos for **{app_name}**...", parse_mode="Markdown")
-    api_key = user_api_keys.get(user_id)
-    heroku_conn = get_heroku_conn(api_key)
-    try:
-        app = heroku_conn.apps[app_name]
-        app.restart()
-        await query.edit_message_text(f"✅ Successfully restarted all dynos for **{app_name}**.",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_restart")]]),
-                                      parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Failed to restart dyno for {app_name}: {e}")
-        await query.edit_message_text(f"❌ Failed to restart dynos for {app_name}. Error: {e}",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_restart")]]))
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-async def show_scale_options(query, user_id: int, app_name: str):
-    api_key = user_api_keys.get(user_id)
-    heroku_conn = get_heroku_conn(api_key)
-    try:
-        app = heroku_conn.apps[app_name]
-        web_dynos = [d for d in app.dynos() if d.type == 'web']
-        current_quantity = len(web_dynos)
-        text = f"App: **{app_name}**\n" \
-               f"Current 'web' dynos: **{current_quantity}**\n\n" \
-               "Select a new quantity for the 'web' dyno:"
-        keyboard = [
-            [
-                InlineKeyboardButton("0 (Turn Off)", callback_data=f"scale_dyno_{app_name}_web_0"),
-                InlineKeyboardButton("1 (Turn On)", callback_data=f"scale_dyno_{app_name}_web_1"),
-            ],
-            [InlineKeyboardButton("« Back to Apps", callback_data="list_apps_scale")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Failed to get dyno info for {app_name}: {e}")
-        await query.edit_message_text(f"❌ Failed to get dyno info for {app_name}. Error: {e}")
+    if query.data == "list_apps":
+        await list_apps(update, context)
+    elif query.data == "login":
+        return await login(update, context)
 
-async def scale_dyno(query, user_id: int, app_name: str, dyno_type: str, quantity: int):
-    await query.edit_message_text(f"📊 Scaling **{dyno_type}** dyno for **{app_name}** to **{quantity}**...", parse_mode="Markdown")
-    api_key = user_api_keys.get(user_id)
-    heroku_conn = get_heroku_conn(api_key)
-    try:
-        app = heroku_conn.apps[app_name]
-        app.scale_dyno(dyno_type, quantity)
-        await query.edit_message_text(f"✅ Successfully scaled **{dyno_type}** dyno for **{app_name}** to **{quantity}**.",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_scale")]]),
-                                      parse_mode="Markdown")
-    except Exception as e:
-        logger.error(f"Failed to scale dyno for {app_name}: {e}")
-        await query.edit_message_text(f"❌ Failed to scale dyno for {app_name}. Error: {e}",
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_scale")]]))
 
-# --- Main Application Setup ---
-def main() -> None:
-    """Start the bot."""
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+# --- Main ---
+def main():
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    # Conversation handler for the new two-step login process
+    # Conversation handler for login
     login_conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(login_start, pattern="^login$")],
+        entry_points=[CallbackQueryHandler(login, pattern="^login$")],
         states={
-            ASK_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_email)],
-            ASK_API_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_api_key)],
+            GET_API_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_api_key)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_login)],
+        fallbacks=[],
+        per_message=True,  # ✅ avoid PTB warning
     )
 
     application.add_handler(CommandHandler("start", start))
@@ -302,4 +150,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
