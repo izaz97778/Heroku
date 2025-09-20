@@ -1,3 +1,5 @@
 flask
 python-telegram-bot
 heroku3
+pymongo
+dnspython
