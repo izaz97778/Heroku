@@ -24,7 +24,8 @@ def get_heroku_conn(api_key: str):
     """Establishes a connection to the Heroku API."""
     try:
         return heroku3.from_key(api_key)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to connect to Heroku: {e}")
         return None
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str = "Main Menu"):
@@ -37,7 +38,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, tex
     if update.message:
         await update.message.reply_text(text, reply_markup=reply_markup)
     elif update.callback_query:
-         await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
+        await update.callback_query.message.edit_text(text, reply_markup=reply_markup)
 
 async def show_app_management_menu(query):
     """Shows the app management options."""
@@ -85,6 +86,10 @@ async def list_apps(query, action_type: str):
     """Fetches and lists user's apps as buttons."""
     await query.message.edit_text("⏳ Fetching your apps...")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
+    if not heroku_conn:
+        await query.message.edit_text("Failed to connect to Heroku. Please check your API Key.")
+        return
+        
     try:
         apps = heroku_conn.apps()
         if not apps:
@@ -104,7 +109,7 @@ async def list_apps(query, action_type: str):
 
     except Exception as e:
         logger.error(f"Failed to fetch apps: {e}")
-        await query.message.edit_text(f"An error occurred while fetching your apps. Please check the logs.\n\nError: {e}")
+        await query.message.edit_text(f"An error occurred while fetching your apps.\n\nError: {e}")
 
 # --- Dyno Actions ---
 async def confirm_restart(query, app_name: str):
@@ -121,7 +126,8 @@ async def restart_dyno(query, app_name: str):
     await query.message.edit_text(f"🔄 Restarting dynos for **{app_name}**...", parse_mode="Markdown")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
-        app = heroku_conn.apps[app_name]
+        # FIX: Added parentheses () after .apps to call it as a function
+        app = heroku_conn.apps()[app_name]
         app.restart()
         await query.message.edit_text(f"✅ Successfully restarted all dynos for **{app_name}**.",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_restart")]]),
@@ -135,7 +141,8 @@ async def show_scale_options(query, app_name: str):
     """Shows current dyno count and scaling options."""
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
-        app = heroku_conn.apps[app_name]
+        # FIX: Added parentheses () after .apps to call it as a function
+        app = heroku_conn.apps()[app_name]
         web_dynos = [d for d in app.dynos() if d.type == 'web']
         current_quantity = len(web_dynos)
         text = f"App: **{app_name}**\n" \
@@ -158,7 +165,8 @@ async def scale_dyno(query, app_name: str, dyno_type: str, quantity: int):
     await query.message.edit_text(f"📊 Scaling **{dyno_type}** dyno for **{app_name}** to **{quantity}**...", parse_mode="Markdown")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
-        app = heroku_conn.apps[app_name]
+        # FIX: Added parentheses () after .apps to call it as a function
+        app = heroku_conn.apps()[app_name]
         app.scale_dyno(dyno_type, quantity)
         await query.message.edit_text(f"✅ Successfully scaled **{dyno_type}** dyno for **{app_name}** to **{quantity}**.",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_scale")]]),
