@@ -45,6 +45,7 @@ async def show_app_management_menu(query):
     """Shows the app management options."""
     keyboard = [
         [InlineKeyboardButton("🔄 Restart Dynos", callback_data="list_apps_restart")],
+        [InlineKeyboardButton("⚙️ Manage Dynos", callback_data="list_apps_manage")],
         [InlineKeyboardButton("« Back to Main Menu", callback_data="main_menu")],
     ]
     await query.message.edit_text("App Management:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -75,12 +76,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_main_menu(update, context)
     elif data == "list_apps_restart":
         await list_apps(query, "restart")
+    elif data == "list_apps_manage":
+        await list_apps(query, "manage")
     elif data.startswith("select_app_restart_"):
         app_name = data.replace("select_app_restart_", "")
         await confirm_restart(query, app_name)
     elif data.startswith("confirm_restart_"):
         app_name = data.replace("confirm_restart_", "")
         await restart_dyno(query, app_name)
+    elif data.startswith("select_app_manage_"):
+        app_name = data.replace("select_app_manage_", "")
+        await show_dyno_management_options(query, app_name)
+    elif data.startswith("resize_dyno_"):
+        _, app_name, dyno_type, size = data.split("_", 3)
+        await resize_dyno(query, app_name, dyno_type, size)
+    elif data.startswith("scale_dyno_"):
+        _, app_name, dyno_type, quantity = data.split("_", 3)
+        await scale_dyno(query, app_name, dyno_type, int(quantity))
 
 
 async def list_apps(query, action_type: str):
@@ -119,26 +131,99 @@ async def confirm_restart(query, app_name: str):
         [InlineKeyboardButton("✅ Yes, Restart", callback_data=f"confirm_restart_{app_name}")],
         [InlineKeyboardButton("❌ No, Cancel", callback_data="list_apps_restart")]
     ]
-    # FIX: Wrap app_name in backticks to prevent Markdown errors
-    await query.message.edit_text(f"Are you sure you want to restart all dynos for `{app_name}`?",
-                                  reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="MarkdownV2")
+    await query.message.edit_text(f"Are you sure you want to restart all dynos for **{app_name}**?",
+                                  reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def restart_dyno(query, app_name: str):
     """Restarts all dynos for a specific app."""
-    # FIX: Wrap app_name in backticks
-    await query.message.edit_text(f"🔄 Restarting dynos for `{app_name}`...", parse_mode="MarkdownV2")
+    await query.message.edit_text(f"🔄 Restarting dynos for **{app_name}**...", parse_mode="Markdown")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
         app = heroku_conn.apps()[app_name]
         app.restart()
-        # FIX: Wrap app_name in backticks
-        await query.message.edit_text(f"✅ Successfully restarted all dynos for `{app_name}`.",
+        await query.message.edit_text(f"✅ Successfully restarted all dynos for **{app_name}**.",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_restart")]]),
-                                      parse_mode="MarkdownV2")
+                                      parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Failed to restart dyno for {app_name}: {e}")
         await query.message.edit_text(f"❌ Failed to restart dynos. Error: {e}",
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Apps", callback_data="list_apps_restart")]]))
+
+async def show_dyno_management_options(query, app_name: str):
+    """Shows current dyno status and options to change size or quantity."""
+    heroku_conn = get_heroku_conn(HEROKU_API_KEY)
+    try:
+        app = heroku_conn.apps()[app_name]
+        # FIX: Use app.process_formation() instead of app.formation()
+        web_formation = app.process_formation().get('web')
+
+        if not web_formation:
+            await query.message.edit_text(f"No 'web' dyno formation found for **{app_name}**.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="manage_apps")]]))
+            return
+            
+        current_size = web_formation.size
+        current_quantity = web_formation.quantity
+
+        text = (f"App: **{app_name}**\n"
+                f"Current Formation: **web** dyno\n"
+                f" ┣ Size: **{current_size}**\n"
+                f" ┗ Quantity: **{current_quantity}**\n\n"
+                f"Select an action:")
+
+        keyboard = [
+            [InlineKeyboardButton("Change Size (Type)", callback_data="noop")],
+            [
+                InlineKeyboardButton("Eco", callback_data=f"resize_dyno_{app_name}_web_eco"),
+                InlineKeyboardButton("Standard-1X", callback_data=f"resize_dyno_{app_name}_web_standard-1x"),
+                InlineKeyboardButton("Standard-2X", callback_data=f"resize_dyno_{app_name}_web_standard-2x"),
+            ],
+            [InlineKeyboardButton("Change Quantity", callback_data="noop")],
+            [
+                InlineKeyboardButton("0", callback_data=f"scale_dyno_{app_name}_web_0"),
+                InlineKeyboardButton("1", callback_data=f"scale_dyno_{app_name}_web_1"),
+                InlineKeyboardButton("2", callback_data=f"scale_dyno_{app_name}_web_2"),
+            ],
+            [InlineKeyboardButton("« Back to App List", callback_data="list_apps_manage")]
+        ]
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Failed to get dyno info for {app_name}: {e}")
+        await query.message.edit_text(f"❌ Failed to get dyno info. Error: {e}")
+
+async def resize_dyno(query, app_name: str, dyno_type: str, size: str):
+    """Changes the dyno size (e.g., to standard-1x)."""
+    await query.message.edit_text(f"Resizing **{dyno_type}** dyno for **{app_name}** to **{size}**...", parse_mode="Markdown")
+    heroku_conn = get_heroku_conn(HEROKU_API_KEY)
+    try:
+        app = heroku_conn.apps()[app_name]
+        # FIX: Use the formation.update() method for resizing
+        formation = app.process_formation()[dyno_type]
+        formation.update(size=size)
+        await query.message.edit_text(f"✅ Successfully resized **{dyno_type}** dyno to **{size}**.",
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« Back to {app_name}", callback_data=f"select_app_manage_{app_name}")]]),
+                                      parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Failed to resize dyno for {app_name}: {e}")
+        await query.message.edit_text(f"❌ Failed to resize dyno. Error: {e}",
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« Back to {app_name}", callback_data=f"select_app_manage_{app_name}")]]))
+
+
+async def scale_dyno(query, app_name: str, dyno_type: str, quantity: int):
+    """Changes the dyno quantity for an app (horizontal scaling)."""
+    await query.message.edit_text(f"📊 Scaling **{dyno_type}** dyno for **{app_name}** to **{quantity}**...", parse_mode="Markdown")
+    heroku_conn = get_heroku_conn(HEROKU_API_KEY)
+    try:
+        app = heroku_conn.apps()[app_name]
+        # FIX: Use the formation.update() method for scaling
+        formation = app.process_formation()[dyno_type]
+        formation.update(quantity=quantity)
+        await query.message.edit_text(f"✅ Successfully scaled **{dyno_type}** dyno for **{app_name}** to **{quantity}**.",
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« Back to {app_name}", callback_data=f"select_app_manage_{app_name}")]]),
+                                      parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Failed to scale dyno for {app_name}: {e}")
+        await query.message.edit_text(f"❌ Failed to scale dyno. Error: {e}",
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« Back to {app_name}", callback_data=f"select_app_manage_{app_name}")]]))
 
 # --- Main Application Setup ---
 def main() -> None:
