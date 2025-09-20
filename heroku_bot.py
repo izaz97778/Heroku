@@ -11,7 +11,9 @@ from telegram.ext import (
 
 # --- Configuration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-HEROKU_API_KEY = os.getenv("HEROKU_API_KEY") # Reads the key from Koyeb environment
+HEROKU_API_KEY = os.getenv("HEROKU_API_KEY")
+# This makes the bot private. It will only respond to this User ID.
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -51,12 +53,22 @@ async def show_app_management_menu(query):
 
 # --- Main Command and Button Handler ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends the main menu."""
+    """Sends the main menu, but only to the owner."""
+    if update.effective_user.id != OWNER_ID:
+        logger.warning(f"Ignoring /start command from unauthorized user: {update.effective_user.id}")
+        return
+
     await show_main_menu(update, context, text="Welcome! This bot is connected to your Heroku account.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles all inline button presses."""
+    """Handles all inline button presses, but only from the owner."""
     query = update.callback_query
+    
+    if query.from_user.id != OWNER_ID:
+        logger.warning(f"Ignoring button press from unauthorized user: {query.from_user.id}")
+        await query.answer("You are not authorized to use this bot.", show_alert=True)
+        return
+
     await query.answer()
     data = query.data
 
@@ -126,7 +138,6 @@ async def restart_dyno(query, app_name: str):
     await query.message.edit_text(f"🔄 Restarting dynos for **{app_name}**...", parse_mode="Markdown")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
-        # FIX: Added parentheses () after .apps to call it as a function
         app = heroku_conn.apps()[app_name]
         app.restart()
         await query.message.edit_text(f"✅ Successfully restarted all dynos for **{app_name}**.",
@@ -141,7 +152,6 @@ async def show_scale_options(query, app_name: str):
     """Shows current dyno count and scaling options."""
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
-        # FIX: Added parentheses () after .apps to call it as a function
         app = heroku_conn.apps()[app_name]
         web_dynos = [d for d in app.dynos() if d.type == 'web']
         current_quantity = len(web_dynos)
@@ -165,7 +175,6 @@ async def scale_dyno(query, app_name: str, dyno_type: str, quantity: int):
     await query.message.edit_text(f"📊 Scaling **{dyno_type}** dyno for **{app_name}** to **{quantity}**...", parse_mode="Markdown")
     heroku_conn = get_heroku_conn(HEROKU_API_KEY)
     try:
-        # FIX: Added parentheses () after .apps to call it as a function
         app = heroku_conn.apps()[app_name]
         app.scale_dyno(dyno_type, quantity)
         await query.message.edit_text(f"✅ Successfully scaled **{dyno_type}** dyno for **{app_name}** to **{quantity}**.",
@@ -185,13 +194,16 @@ def main() -> None:
     if not HEROKU_API_KEY:
         logger.critical("HEROKU_API_KEY environment variable not set. Exiting.")
         return
+    if OWNER_ID == 0:
+        logger.critical("OWNER_ID environment variable not set or is invalid. Exiting.")
+        return
         
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    logger.info("Bot is running...")
+    logger.info(f"Bot is running... Awaiting commands from owner ({OWNER_ID}).")
     application.run_polling()
 
 
